@@ -1,0 +1,141 @@
+---
+title: "demographic data"
+author: "Aghasi Tavadyan"
+date: "2022-10-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(scales)
+library(lubridate)
+library(httr)
+library(readxl)
+library(janitor)
+library(gganimate)
+
+theme_set(ggthemes::theme_clean())
+```
+
+
+```{r}
+total_url <- "https://www.armstat.am/file/doc/99531223.xlsx"
+city_url <- "https://www.armstat.am/file/doc/99531233.xlsx"
+agr_url <- "https://www.armstat.am/file/doc/99531243.xlsx"
+
+GET(total_url, write_disk(total_file <- tempfile(fileext = ".xlsx")))
+GET(city_url, write_disk(city_file <- tempfile(fileext = ".xlsx")))
+GET(agr_url, write_disk(agr_file <- tempfile(fileext = ".xlsx")))
+
+total_sheets <- excel_sheets(total_file)
+city_sheets <- excel_sheets(city_file) 
+agr_sheets <- excel_sheets(agr_file)
+
+files <- c(total_file, city_file, agr_file)
+
+sheets <- list(total_pop = total_sheets,
+               city_pop = city_sheets,
+               agr_pop = agr_sheets)
+
+demographic_total <- tibble()
+
+for (city in 1:length(sheets)) {
+  
+  demographic <- tibble()
+  
+  for (province in 1:length(sheets[[city]])) {
+    
+    province_data <- 
+      read_excel(files[city],
+                 sheet = sheets[[city]][province],
+                 skip = 2) %>% 
+      slice_head(n = -4) %>%
+      t(.) %>% 
+      as_tibble() %>% 
+      row_to_names(row_number = 1) %>% 
+      clean_names() %>% 
+      rename(year = 1, sex = 2) %>%  
+      fill(year, .direction = "down") %>% 
+      pivot_longer(-c(year, sex), names_to = "age",
+                   values_to = "population") %>% 
+      filter(age != "əndamenə") %>% 
+      mutate(age = parse_number(age)) %>% 
+      extract(year, into = "year", regex = "(\\d{4}).?") %>% 
+      mutate(year = as.numeric(year),
+             population = as.numeric(population)) %>% 
+      mutate(province = sheets[[city]][province])
+    
+    demographic <- bind_rows(demographic, province_data)
+  }
+  
+  demographic <- 
+    demographic %>% 
+    mutate(city = names(sheets)[city])
+  
+  demographic_total <- bind_rows(demographic_total, demographic)
+}
+
+demographic_total %>%  
+  group_by(city, province) %>% 
+  summarise(population = sum(population))
+
+demographic_total %>% 
+  mutate(age = as.numeric(age)) %>% 
+  write_excel_csv("C:/Users/HP/Documents/R/projects/demographic_data.csv")
+
+```
+
+```{r}
+demographic_total <- 
+  read_csv("C:/Users/HP/Documents/R/projects/demographic_data.csv")
+
+demographic_type_summary <- 
+  demographic_total %>% 
+  filter(province != "ՀՀ",
+         city != "total_pop") %>% 
+  mutate(type = case_when(
+    province == "Երևան" ~ "Երևան",
+    province != "Երևան" & city == "city_pop" ~ "այլ քաղաքներ",
+    city == "agr_pop" ~ "գյուղեր"
+  )) %>% 
+  group_by(year, sex, type, age) %>% 
+  summarise(population = sum(population), .groups = "drop") %>% 
+  filter(sex != "Ընդամենը",
+         age != "80") %>% 
+  mutate(age = as.factor(age),
+         type = fct_relevel(type, "Երևան", "այլ քաղաքներ"),
+         year = ymd(paste(year, 1, 1)))
+
+
+demographic_animation <- 
+  demographic_type_summary %>% 
+  mutate(population = ifelse(sex == "Տղամարդիկ", population, -population)) %>%
+  ggplot(aes(population, age, fill = sex)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~type) +
+  scale_x_continuous(
+    breaks = seq(-1e4, 1e4, 5000),
+    labels = c("10 000", "5 000", "0", "5 000", "10 000")
+  ) +
+  scale_y_discrete(breaks = seq(0, 80, 5)) +
+  labs(
+    title = "Ինչպե՞ս է փոխվել ՀՀ բնակչության սեռատարքային կազմը 2011-ից մինչև 2021 թիվը",
+    subtitle = paste('Սեռատարիքային բուրգը ըստ`', ('{frame_time}')),
+    x = 'բնակչության քանակը',
+    y = 'տարիք',
+    fill = "Սեռ`",
+    caption = "Հեղինակ` Աղասի Թավադյան  |  tvyal.com  |  տվյալների աղբյուր` https://www.armstat.am/am/?nid=209"
+  ) +
+  transition_time(year) +
+  ease_aes('linear') +
+  theme(legend.position = "bottom")
+
+
+animate(demographic_animation, height = 700, width = 700)
+
+```
+
